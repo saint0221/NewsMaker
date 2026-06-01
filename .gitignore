@@ -1,0 +1,18 @@
+# 환경 변수
+.env
+
+# 생성된 출력물
+output/
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+.Python
+
+# macOS
+.DS_Store
+
+# 임시 파일
+*.tmp
+*.log

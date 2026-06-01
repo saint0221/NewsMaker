@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>News Shorts Generator</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0a0a0f;
+    color: #e8e8f0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 48px 24px;
+  }
+
+  header {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+  header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: #fff;
+  }
+  header p {
+    margin-top: 8px;
+    font-size: 14px;
+    color: #666;
+  }
+
+  /* Category tabs */
+  .cat-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-bottom: 20px;
+  }
+  .cat-btn {
+    background: #13131a;
+    border: 1px solid #1e1e2a;
+    border-radius: 20px;
+    color: #888;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 16px;
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .cat-btn:hover { border-color: #333; color: #ccc; }
+  .cat-btn.active { background: #1a1a30; border-color: #6c63ff; color: #6c63ff; }
+
+  .fetch-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #fff;
+    color: #0a0a0f;
+    border: none;
+    border-radius: 10px;
+    padding: 12px 28px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity .15s;
+  }
+  .fetch-btn:hover { opacity: .85; }
+  .fetch-btn:disabled { opacity: .4; cursor: default; }
+  .fetch-btn svg { flex-shrink: 0; }
+
+  /* News list */
+  #news-section { width: 100%; max-width: 680px; margin-top: 40px; }
+
+  .news-card {
+    display: flex;
+    gap: 16px;
+    background: #13131a;
+    border: 1px solid #1e1e2a;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+    position: relative;
+  }
+  .news-card:hover { background: #16161f; border-color: #2a2a3a; }
+  .news-card.selected {
+    border-color: #6c63ff;
+    background: #13132a;
+  }
+  .news-card.selected::after {
+    content: '✓';
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    width: 22px;
+    height: 22px;
+    background: #6c63ff;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    line-height: 22px;
+    text-align: center;
+    color: #fff;
+  }
+
+  .card-thumb {
+    width: 80px;
+    height: 60px;
+    border-radius: 7px;
+    object-fit: cover;
+    background: #1e1e2a;
+    flex-shrink: 0;
+  }
+  .card-body { flex: 1; min-width: 0; }
+  .card-source {
+    font-size: 11px;
+    color: #6c63ff;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: 4px;
+  }
+  .card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #e8e8f0;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .card-desc {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #555;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* Generate button */
+  #generate-wrap {
+    margin-top: 24px;
+    display: flex;
+    justify-content: center;
+  }
+  .gen-btn {
+    background: #6c63ff;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 13px 36px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity .15s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .gen-btn:hover { opacity: .85; }
+  .gen-btn:disabled { opacity: .4; cursor: default; }
+
+  /* Progress */
+  #progress-section {
+    width: 100%;
+    max-width: 680px;
+    margin-top: 32px;
+    background: #13131a;
+    border: 1px solid #1e1e2a;
+    border-radius: 12px;
+    padding: 24px;
+  }
+  #progress-section h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: 20px;
+  }
+
+  .step {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    margin-bottom: 16px;
+    opacity: .35;
+    transition: opacity .2s;
+  }
+  .step.active, .step.done, .step.error { opacity: 1; }
+
+  .step-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: #1e1e2a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 14px;
+    color: #555;
+    transition: background .2s, color .2s;
+  }
+  .step.active .step-icon { background: #1e1e50; color: #6c63ff; animation: pulse 1.2s infinite; }
+  .step.done .step-icon  { background: #1a2e1a; color: #4caf50; animation: none; }
+  .step.error .step-icon { background: #2e1a1a; color: #ef5350; animation: none; }
+
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(108,99,255,.4); }
+    50%       { box-shadow: 0 0 0 6px rgba(108,99,255,0); }
+  }
+
+  .step-body { flex: 1; }
+  .step-label {
+    font-size: 14px;
+    font-weight: 600;
+    color: #e8e8f0;
+  }
+  .step-msg {
+    margin-top: 3px;
+    font-size: 12px;
+    color: #666;
+    min-height: 16px;
+  }
+  .step.error .step-msg { color: #ef5350; }
+
+  /* Result */
+  #result-section {
+    width: 100%;
+    max-width: 680px;
+    margin-top: 24px;
+    background: #0e1e14;
+    border: 1px solid #1a3a24;
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+  }
+  #result-section h3 {
+    font-size: 18px;
+    font-weight: 700;
+    color: #4caf50;
+    margin-bottom: 8px;
+  }
+  #result-section p {
+    font-size: 13px;
+    color: #6a9c78;
+    margin-bottom: 4px;
+  }
+  .path-box {
+    margin-top: 12px;
+    background: #0a0f0c;
+    border: 1px solid #1a3a24;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: #4caf50;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    word-break: break-all;
+    text-align: left;
+  }
+
+  .hidden { display: none !important; }
+
+  /* Spinner */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin { animation: spin .7s linear infinite; display: inline-block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>News Shorts Generator</h1>
+  <p>뉴스 기사 → 영어 대본 → TTS → CapCut 프로젝트</p>
+</header>
+
+<div class="cat-row">
+  <button class="cat-btn active" onclick="setCategory('technology', this)">Technology</button>
+  <button class="cat-btn" onclick="setCategory('business', this)">Business</button>
+  <button class="cat-btn" onclick="setCategory('science', this)">Science</button>
+  <button class="cat-btn" onclick="setCategory('health', this)">Health</button>
+  <button class="cat-btn" onclick="setCategory('entertainment', this)">Entertainment</button>
+  <button class="cat-btn" onclick="setCategory('sports', this)">Sports</button>
+</div>
+
+<button class="fetch-btn" id="fetchBtn" onclick="fetchNews()">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 4h16v2H4zM4 10h16v2H4zM4 16h10v2H4z"/>
+  </svg>
+  뉴스 불러오기
+</button>
+
+<div id="news-section" class="hidden"></div>
+
+<div id="generate-wrap" class="hidden">
+  <button class="gen-btn" id="genBtn" onclick="runPipeline()">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="5 3 19 12 5 21 5 3"/>
+    </svg>
+    영상 생성
+  </button>
+</div>
+
+<div id="progress-section" class="hidden">
+  <h3>진행 상황</h3>
+  <div class="step" id="step-script">
+    <div class="step-icon">✦</div>
+    <div class="step-body">
+      <div class="step-label">대본 생성</div>
+      <div class="step-msg" id="msg-script">Claude로 영어 스크립트 작성</div>
+    </div>
+  </div>
+  <div class="step" id="step-tts">
+    <div class="step-icon">♪</div>
+    <div class="step-body">
+      <div class="step-label">TTS 음성</div>
+      <div class="step-msg" id="msg-tts">ElevenLabs 영어 나레이션</div>
+    </div>
+  </div>
+  <div class="step" id="step-capcut">
+    <div class="step-icon">▶</div>
+    <div class="step-body">
+      <div class="step-label">CapCut 프로젝트</div>
+      <div class="step-msg" id="msg-capcut">카라오케 자막 포함 내보내기</div>
+    </div>
+  </div>
+</div>
+
+<div id="result-section" class="hidden">
+  <h3>✓ 완성!</h3>
+  <p>CapCut을 재시작하면 프로젝트 목록에 자동으로 나타납니다.</p>
+  <div class="path-box" id="result-path"></div>
+  <a id="result-source-link" href="#" target="_blank" rel="noopener" style="
+    display:none; margin-top:14px; padding:10px 20px;
+    background:#1e2a1e; border:1px solid #2a4a2a; border-radius:8px;
+    color:#4caf50; font-size:13px; text-decoration:none; font-weight:600;
+  ">↗ 원문 기사 보기</a>
+</div>
+
+<script>
+let selectedIndex = null;
+let articles = [];
+let currentCategory = 'technology';
+
+function setCategory(cat, el) {
+  currentCategory = cat;
+  document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+}
+
+async function fetchNews() {
+  const btn = document.getElementById('fetchBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin">⟳</span> 불러오는 중...';
+
+  document.getElementById('news-section').classList.add('hidden');
+  document.getElementById('generate-wrap').classList.add('hidden');
+  document.getElementById('progress-section').classList.add('hidden');
+  document.getElementById('result-section').classList.add('hidden');
+  selectedIndex = null;
+
+  try {
+    const res = await fetch('/api/news', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category: currentCategory }),
+    });
+    articles = await res.json();
+    renderNews(articles);
+  } catch (e) {
+    alert('뉴스 불러오기 실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v2H4zM4 10h16v2H4zM4 16h10v2H4z"/></svg> 뉴스 불러오기`;
+  }
+}
+
+function renderNews(list) {
+  const section = document.getElementById('news-section');
+  section.innerHTML = '';
+  list.forEach(a => {
+    const card = document.createElement('div');
+    card.className = 'news-card';
+    card.dataset.index = a.index;
+    card.onclick = () => selectCard(a.index);
+    card.innerHTML = `
+      ${a.image_url ? `<img class="card-thumb" src="${a.image_url}" onerror="this.style.display='none'" alt="">` : '<div class="card-thumb"></div>'}
+      <div class="card-body">
+        <div class="card-source">${a.source}</div>
+        <div class="card-title">${a.title}</div>
+        <div class="card-desc">${a.description}</div>
+      </div>`;
+    section.appendChild(card);
+  });
+  section.classList.remove('hidden');
+}
+
+function selectCard(index) {
+  selectedIndex = index;
+  document.querySelectorAll('.news-card').forEach(c => {
+    c.classList.toggle('selected', parseInt(c.dataset.index) === index);
+  });
+  document.getElementById('generate-wrap').classList.remove('hidden');
+}
+
+async function runPipeline() {
+  if (selectedIndex === null) return;
+
+  const genBtn = document.getElementById('genBtn');
+  genBtn.disabled = true;
+
+  const steps = ['script', 'tts', 'capcut'];
+  steps.forEach(s => {
+    const el = document.getElementById('step-' + s);
+    el.className = 'step';
+  });
+  document.getElementById('progress-section').classList.remove('hidden');
+  document.getElementById('result-section').classList.add('hidden');
+
+  const res = await fetch('/api/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ index: selectedIndex }),
+  });
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const evt = JSON.parse(line.slice(6));
+      handleEvent(evt);
+    }
+  }
+
+  genBtn.disabled = false;
+}
+
+function handleEvent({ step, status, message }) {
+  const stepEl = document.getElementById('step-' + step);
+  const msgEl = document.getElementById('msg-' + step);
+  if (!stepEl) return;
+
+  stepEl.className = 'step ' + status;
+  msgEl.textContent = message;
+
+  if (step === 'capcut' && status === 'done') {
+    let path = message, sourceUrl = '';
+    try { const d = JSON.parse(message); path = d.path; sourceUrl = d.sourceUrl; } catch {}
+    document.getElementById('result-path').textContent = path;
+    const link = document.getElementById('result-source-link');
+    if (sourceUrl) { link.href = sourceUrl; link.style.display = 'inline-block'; }
+    document.getElementById('result-section').classList.remove('hidden');
+  }
+}
+</script>
+</body>
+</html>
