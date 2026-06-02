@@ -84,6 +84,43 @@ def _translate_chunks(words: list[dict]) -> list[str]:
     return translate_to_korean(chunks) if chunks else []
 
 
+def _make_common_title(script_md: str, fallback: str) -> str:
+    """스크립트 전체를 관통하는 짧은 공통 주제 타이틀 생성 (Claude Haiku)."""
+    import subprocess
+    # 나레이션 전문 추출 (최대 600자)
+    narrations = re.findall(
+        r'\*\*(?:나레이션|Narration)\*\*:[ \t]*\n+([\s\S]+?)(?=\n\s*\n\*\*|\n---|\n##|$)',
+        script_md, re.IGNORECASE
+    )
+    combined = " ".join(n.strip().strip('"') for n in narrations)[:600]
+
+    prompt = (
+        f"Based on this news script excerpt, write a SHORT punchy English title "
+        f"(5-8 words max) that captures the main theme. "
+        f"No quotes, no punctuation at end.\n\n{combined}"
+    )
+    try:
+        result = subprocess.run(
+            ["claude", "--print", "--dangerously-skip-permissions",
+             "--model", "claude-haiku-4-5-20251001"],
+            input=prompt, capture_output=True, text=True, timeout=30,
+        )
+        t = result.stdout.strip().strip('"').strip("'")
+        if t and len(t) < 80:
+            return t
+    except Exception:
+        pass
+    return fallback
+
+
+def _extract_scene_titles(script_md: str) -> dict[str, str]:
+    """## [SCENE 01 - Hook Opening] 형식에서 씬 ID → 제목 추출."""
+    titles = {}
+    for m in re.finditer(r'##\s+\[SCENE\s+(\d+)\s*-\s*([^\]]+)\]', script_md, re.IGNORECASE):
+        titles[m.group(1).zfill(2)] = m.group(2).strip()
+    return titles
+
+
 def _extract_source(article_dir: Path) -> str:
     """article.json에서 소스명을 읽는다."""
     p = article_dir / "article.json"
@@ -110,11 +147,30 @@ def export(
     Returns: CapCut 프로젝트 경로
     """
     title_match = re.search(
-        r'^#\s+(?:대본:\s*|YouTube Shorts Script:\s*)?(.+)',
+        r'^#\s+(?:대본:\s*|YouTube Shorts Script:\s*|News Script:\s*)?(.+)',
         script_md, re.MULTILINE
     )
     title = title_match.group(1).strip() if title_match else "뉴스-숏폼"
     slug = re.sub(r'[^\w가-힣-]', '-', title).strip('-')[:40]
+
+    # 공통 타이틀 생성 (모든 씬 동일하게 사용)
+    common_title = _make_common_title(script_md, title)
+
+    # 씬별 나레이션 추출 (이미지 프롬프트용)
+    def _extract_narration(md: str, sid: str) -> str:
+        for block in re.split(r'(?=##\s+\[SCENE\s+\d+)', md, flags=re.IGNORECASE):
+            if not re.search(rf'##\s+\[SCENE\s+0*{int(sid)}', block, re.IGNORECASE):
+                continue
+            m = re.search(r'\*\*(?:나레이션|Narration)\*\*:[ \t]*\n+([\s\S]+?)(?=\n\s*\n\*\*|\n---|\n##|$)',
+                          block, re.IGNORECASE)
+            if m:
+                return re.sub(r'^["""\'\']+|["""\'\']+$', '', m.group(1).strip())
+        return ""
+
+    # AI 이미지 생성 (images/ 폴더)
+    from src.image_generator import generate_scene_image
+    images_dir = article_dir / "images"
+    images_dir.mkdir(exist_ok=True)
 
     # 스타일드 비디오 생성 (양피지 레이아웃)
     from src.frame_renderer import create_styled_video
@@ -144,14 +200,26 @@ def export(
             cached = []
         ko_chunks = cached
 
+        scene_headline = common_title
+
+        # AI 이미지 생성 (캐시 있으면 재사용)
+        ai_image_path = str(images_dir / f"scene_{sid}.jpg")
+        if not Path(ai_image_path).exists():
+            narration_text = _extract_narration(script_md, sid)
+            generate_scene_image(scene_headline, narration_text, ai_image_path)
+
+        # 이미지 경로 결정: AI 생성 > 기사 썸네일 > None
+        final_image_path = ai_image_path if Path(ai_image_path).exists() else None
+
         create_styled_video(
             output_path=video_path,
-            headline=title,
+            headline=scene_headline,
             source=_extract_source(article_dir),
             image_url=image_url or None,
             words=words,
             ko_chunks=ko_chunks,
             total_duration=dur,
+            image_path=final_image_path,
         )
 
     # article.json에 URL 저장

@@ -154,6 +154,7 @@ def _darken(img: Image.Image, factor: float = 0.55) -> Image.Image:
     return img.point(lambda p: int(p * factor))
 
 
+
 # ── 텍스트 줄 래핑 ─────────────────────────────────────────────
 def _wrap(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
     dummy = Image.new("RGB", (1, 1))
@@ -182,12 +183,14 @@ def render_frame(
     ko_lines: list[str],
     active_line: int,
     active_word: str,
-    active_char_start: int = -1,   # 정확한 강조 위치 (-1이면 find() fallback)
+    active_char_start: int = -1,
     active_char_end: int = -1,
     image_cache: dict | None = None,
+    transparent_hero: bool = False,   # True → 히어로 영역을 투명으로 (Ken Burns용)
 ) -> Image.Image:
 
-    bg = _parchment_bg()
+    mode = "RGBA" if transparent_hero else "RGB"
+    bg = _parchment_bg().convert(mode)
     draw = ImageDraw.Draw(bg, "RGBA")
 
     # ── 제목 카드 ────────────────────────────────────────────
@@ -220,26 +223,28 @@ def render_frame(
         bbox = draw.textbbox((0, 0), tl, font=f_title)
         ty += bbox[3] - bbox[1] + 8
 
-    # 소스 뱃지
-    badge_text = f"● {source}"
-    draw.text((text_x, ty + 10), badge_text, font=f_source, fill=SOURCE_TEXT)
-
     # ── 기사 이미지 ──────────────────────────────────────────
     img_x0, img_x1 = 40, W - 40
     img_w = img_x1 - img_x0
-    cache_key = image_url or "__none__"
-    if image_cache is not None and cache_key in image_cache:
-        hero = image_cache[cache_key]
-    else:
-        hero = _darken(_load_image(image_url, img_w, IMG_H))
-        if image_cache is not None:
-            image_cache[cache_key] = hero
 
-    # 둥근 마스크로 이미지 붙이기
-    mask = Image.new("L", (img_w, IMG_H), 0)
-    md = ImageDraw.Draw(mask)
-    md.rounded_rectangle([0, 0, img_w, IMG_H], radius=20, fill=255)
-    bg.paste(hero, (img_x0, IMG_TOP), mask)
+    if transparent_hero:
+        # Ken Burns 모드: 히어로 영역을 투명으로 남김
+        if mode == "RGBA":
+            transparent_region = Image.new("RGBA", (img_w, IMG_H), (0, 0, 0, 0))
+            bg.paste(transparent_region, (img_x0, IMG_TOP))
+    else:
+        cache_key = image_url or "__none__"
+        if image_cache is not None and cache_key in image_cache:
+            hero = image_cache[cache_key]
+        else:
+            hero = _darken(_load_image(image_url, img_w, IMG_H))
+            if image_cache is not None:
+                image_cache[cache_key] = hero
+
+        mask = Image.new("L", (img_w, IMG_H), 0)
+        md = ImageDraw.Draw(mask)
+        md.rounded_rectangle([0, 0, img_w, IMG_H], radius=20, fill=255)
+        bg.paste(hero, (img_x0, IMG_TOP), mask)
 
     # ── 소스 뱃지 바 ─────────────────────────────────────────
     badge_x0, badge_x1 = 40, W - 40
@@ -247,18 +252,18 @@ def render_frame(
     _rounded_rect(draw, (badge_x0, badge_y0, badge_x1, badge_y1),
                   radius=BADGE_H // 2, fill=BADGE_BG)
     f_badge = _font(28, bold=True)
-    bl = f"📰  {source}  ·  뉴스 숏폼"
+    bl = "뉴스 숏폼"
     bw = draw.textbbox((0, 0), bl, font=f_badge)[2]
     draw.text(((W - bw) // 2, badge_y0 + 12), bl, font=f_badge, fill=BADGE_FG)
 
     # ── 자막 텍스트 구역 — 단일 라인씩, 5 엔트리 ─────────────────
-    f_ko        = _font(32)
-    f_body      = _font(40)
-    f_body_bold = _font(40, bold=True)
-    KO_H        = 44   # 한글 줄 높이
+    f_ko        = _font(42)
+    f_body      = _font(54)
+    f_body_bold = _font(54, bold=True)
+    KO_H        = 56   # 한글 줄 높이
     KO_GAP      = 6    # 한글↔영어 간격
-    EN_H        = 54   # 영어 줄 높이
-    ENTRY_GAP   = 18   # 엔트리 간격
+    EN_H        = 70   # 영어 줄 높이
+    ENTRY_GAP   = 14   # 엔트리 간격
     max_text_w  = W - TEXT_PAD_X * 2
     ty = TEXT_TOP
 
@@ -275,34 +280,49 @@ def render_frame(
             draw.text((TEXT_PAD_X, ty), ko_display, font=f_ko, fill=ko_color)
         ty += KO_H + KO_GAP
 
-        # ── 영어 — 한 줄 (강조 단어) ─────────────────────────
-        # 정확한 문자 위치 우선 사용 → 같은 단어 중복 강조 방지
+        # ── 영어 — 래핑 허용 (오버플로 없이 전부 표시) ──────────
+        en_wrapped = _wrap(line, f_body, max_text_w)
+
         if is_active and active_word:
             idx = active_char_start if active_char_start >= 0 else line.lower().find(active_word.lower())
         else:
             idx = -1
-        if idx >= 0:
-            # active_char_end로 정확한 끝 위치 사용
-            end_idx = active_char_end if (active_char_end > idx) else idx + len(active_word)
-            before = line[:idx]
-            word   = line[idx:end_idx]
-            after  = line[end_idx:]
-            x = TEXT_PAD_X
-            if before:
-                draw.text((x, ty), before, font=f_body, fill=en_color)
-                x += draw.textbbox((0, 0), before, font=f_body)[2]
-            wb = draw.textbbox((0, 0), word, font=f_body_bold)
-            ww, wh = wb[2], wb[3] - wb[1]
-            pad = 6
-            _rounded_rect(draw,
-                (x - pad, ty - pad//2, x + ww + pad, ty + wh + pad//2),
-                radius=8, fill=HIGHLIGHT_BG)
-            draw.text((x, ty), word, font=f_body_bold, fill=HIGHLIGHT_FG)
-            x += ww + 2
-            if after:
-                draw.text((x, ty), after, font=f_body, fill=en_color)
-        else:
-            draw.text((TEXT_PAD_X, ty), line, font=f_body, fill=en_color)
+
+        char_offset = 0
+        for wrap_line in en_wrapped:
+            line_start = char_offset
+            line_end   = char_offset + len(wrap_line)
+            active_in  = (idx >= 0 and line_start <= idx < line_end)
+
+            if active_in:
+                local_idx = idx - line_start
+                end_idx   = min((active_char_end - line_start) if active_char_end > idx
+                                else local_idx + len(active_word),
+                                len(wrap_line))
+                before = wrap_line[:local_idx]
+                word   = wrap_line[local_idx:end_idx]
+                after  = wrap_line[end_idx:]
+                x = TEXT_PAD_X
+                if before:
+                    draw.text((x, ty), before, font=f_body, fill=en_color)
+                    x += draw.textbbox((0, 0), before, font=f_body)[2]
+                wb = draw.textbbox((0, 0), word, font=f_body_bold)
+                ww, wh = wb[2], wb[3] - wb[1]
+                pad = 6
+                _rounded_rect(draw,
+                    (x - pad, ty - pad//2, x + ww + pad, ty + wh + pad//2),
+                    radius=8, fill=HIGHLIGHT_BG)
+                draw.text((x, ty), word, font=f_body_bold, fill=HIGHLIGHT_FG)
+                x += ww + 2
+                if after:
+                    draw.text((x, ty), after, font=f_body, fill=en_color)
+            else:
+                draw.text((TEXT_PAD_X, ty), wrap_line, font=f_body, fill=en_color)
+
+            ty += EN_H
+            char_offset = line_end + 1  # +1 for space
+
+        ty -= EN_H  # 마지막 EN_H는 아래 ty+=EN_H에서 더함
 
         ty += EN_H
 
@@ -318,6 +338,43 @@ def render_frame(
 
 
 # ── 씬 비디오 생성 ─────────────────────────────────────────────
+IMG_W = W - 80  # 썸네일 영역 너비 (1000px)
+
+
+def _create_ken_burns_video(
+    image_path: str,
+    output_path: str,
+    total_duration: float,
+    total_frames: int,
+    zoom_direction: str = "in",
+) -> bool:
+    """ffmpeg zoompan 필터로 Ken Burns 효과 배경 영상 생성 (1000×560)."""
+    try:
+        fps = 30
+        zoom_expr = f"1+0.08*on/{total_frames}" if zoom_direction == "in" \
+                    else f"1.08-0.08*on/{total_frames}"
+
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", image_path,
+            "-vf", (
+                f"scale=8000:-1,"
+                f"zoompan=z='{zoom_expr}':"
+                f"x='iw/2-(iw/zoom/2)':"
+                f"y='ih/2-(ih/zoom/2)':"
+                f"d={total_frames}:s={IMG_W}x{IMG_H},"
+                "format=yuv420p"
+            ),
+            "-t", str(total_duration),
+            "-r", str(fps),
+            "-c:v", "libx264", "-preset", "fast",
+            "-an", output_path,
+        ], check=True, capture_output=True)
+        return True
+    except Exception:
+        return False
+
+
 def create_styled_video(
     output_path: str,
     headline: str,
@@ -325,8 +382,9 @@ def create_styled_video(
     image_url: str | None,
     words: list[dict],
     total_duration: float,
-    ko_sentences: list[dict] | None = None,   # 레거시 (사용 안 함)
-    ko_chunks: list[str] | None = None,        # 청크별 한국어 번역 (groups와 1:1)
+    ko_sentences: list[dict] | None = None,
+    ko_chunks: list[str] | None = None,
+    image_path: str | None = None,   # AI 생성 이미지 로컬 경로 (Ken Burns용)
 ):
     """
     words 타이밍에 맞춰 스타일드 프레임을 생성하고 비디오로 조립한다.
@@ -341,7 +399,7 @@ def create_styled_video(
         # 정적 프레임 한 장
         img = render_frame(headline, source, image_url, [], [], 0, "")
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-            img.save(f.name, quality=92)
+            img.save(f.name, quality=88, optimize=True)
             frame_path = f.name
         subprocess.run([
             "ffmpeg", "-y", "-loop", "1", "-i", frame_path,
@@ -359,7 +417,7 @@ def create_styled_video(
         seg_start = words[i]["start"]
         group_words = []
         j = i
-        while j < len(words) and len(group_words) < 8 and words[j]["end"] - seg_start < 3.5:
+        while j < len(words) and len(group_words) < 6 and words[j]["end"] - seg_start < 3.0:
             group_words.append(words[j])
             j += 1
         if j == i:
@@ -375,11 +433,11 @@ def create_styled_video(
         })
         i = j
 
-    # [-2, -1, 0, +1, +2] = 5개 엔트리 표시
+    # [-1, 0, +1, +2] = 4개 엔트리 표시 (글자 크기 확대로 조정)
     events: list[dict] = []
     for gi, grp in enumerate(groups):
         ctx_lines = []
-        for delta in [-2, -1, 0, 1, 2]:
+        for delta in [-1, 0, 1, 2]:
             idx = gi + delta
             if 0 <= idx < len(groups):
                 ctx_lines.append((delta, groups[idx]["line"], groups[idx].get("ko", "")))
@@ -436,13 +494,28 @@ def create_styled_video(
         ev = events[idx]
         return ev if t < ev["t_end"] else None
 
-    # 렌더링 캐시: (active_li, active_word) → frame jpg path
-    frame_cache: dict[tuple, str] = []
     frame_paths: list[str] = []
     numbered_dir = tempfile.mkdtemp()
 
+    # Ken Burns용 히어로 이미지 로드 (10% 여유분 확보)
+    hero_raw: Image.Image | None = None
+    if image_path and Path(image_path).exists():
+        try:
+            src = Image.open(image_path).convert("RGB")
+            # 줌 영역 확보를 위해 15% 크게 스케일
+            scale = max((IMG_W * 1.15) / src.width, (IMG_H * 1.15) / src.height)
+            hero_raw = src.resize((int(src.width * scale), int(src.height * scale)), Image.LANCZOS)
+        except Exception:
+            hero_raw = None
+
+    # 히어로 마스크 (둥근 모서리) — 재사용
+    _hero_mask = Image.new("L", (IMG_W, IMG_H), 0)
+    _md = ImageDraw.Draw(_hero_mask)
+    _md.rounded_rectangle([0, 0, IMG_W, IMG_H], radius=20, fill=255)
+
     try:
-        rendered_cache: dict[tuple, Image.Image] = {}
+        # 텍스트 레이어 캐시: key → RGBA (히어로 영역 투명)
+        text_layer_cache: dict[tuple, Image.Image] = {}
 
         for fn in range(total_frames):
             t = fn / fps
@@ -455,34 +528,62 @@ def create_styled_video(
             else:
                 key = ("blank", "", ())
 
-            if key not in rendered_cache:
+            # 텍스트 레이어 캐시 (Ken Burns 유무와 무관하게 transparent_hero)
+            if key not in text_layer_cache:
+                render_kwargs = dict(
+                    transparent_hero=bool(hero_raw),
+                    image_cache=image_cache,
+                )
                 if ev:
-                    img = render_frame(
+                    layer = render_frame(
                         headline, source, image_url,
                         ev["lines"], ev.get("ko_lines", []),
                         ev["active_li"], ev["active_word"],
                         ev.get("active_char_start", -1),
                         ev.get("active_char_end", -1),
-                        image_cache,
+                        **render_kwargs,
                     )
                 else:
-                    img = render_frame(headline, source, image_url, [], [], 0, "", -1, -1, image_cache)
-                rendered_cache[key] = img
+                    layer = render_frame(
+                        headline, source, image_url,
+                        [], [], 0, "", -1, -1,
+                        **render_kwargs,
+                    )
+                text_layer_cache[key] = layer.convert("RGBA")
 
-            fp = Path(numbered_dir) / f"frame_{fn:06d}.png"
-            rendered_cache[key].save(str(fp))
-            frame_paths.append(str(fp))
+            text_layer = text_layer_cache[key]
+
+            if hero_raw is not None:
+                # Ken Burns: 프레임별 줌 크롭 → 히어로 영역에 붙이기
+                progress = fn / max(total_frames - 1, 1)
+                zoom = 1.0 + 0.08 * progress
+                crop_w = int(IMG_W / zoom)
+                crop_h = int(IMG_H / zoom)
+                cx = (hero_raw.width - crop_w) // 2
+                cy = (hero_raw.height - crop_h) // 2
+                kb = hero_raw.crop((cx, cy, cx + crop_w, cy + crop_h))
+                kb = kb.resize((IMG_W, IMG_H), Image.LANCZOS)
+                kb = kb.point(lambda p: int(p * 0.55))  # 다크닝
+
+                frame = text_layer.copy()
+                frame.paste(kb, (40, IMG_TOP), _hero_mask)  # 투명 영역에 KB 삽입
+                frame = frame.convert("RGB")
+            else:
+                frame = text_layer.convert("RGB")
+
+            fp = Path(numbered_dir) / f"frame_{fn:06d}.jpg"
+            frame.save(str(fp), quality=88, optimize=True)
 
         subprocess.run([
             "ffmpeg", "-y",
             "-framerate", str(fps),
-            "-i", str(Path(numbered_dir) / "frame_%06d.png"),
-            "-vf", "format=yuv420p",          # yuvj420p(JPEG풀레인지) → yuv420p
+            "-i", str(Path(numbered_dir) / "frame_%06d.jpg"),
+            "-vf", "format=yuv420p",
             "-c:v", "libx264", "-preset", "fast",
             "-profile:v", "high", "-level", "4.1",
             "-pix_fmt", "yuv420p",
             "-an", output_path,
-        ], check=True, capture_output=True)
+            ], check=True, capture_output=True)
 
     finally:
         import shutil as _shutil

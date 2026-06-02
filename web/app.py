@@ -236,7 +236,33 @@ async def run_pipeline(ref: ArticleRef, request: Request):
         except Exception as e:
             yield event("factcheck", "error", f"팩트 체크 실패 (원본 사용): {e}")
 
-        # 2. TTS
+        # 2. AI 이미지 생성
+        yield event("image", "running", f"AI 이미지 생성 중 (fal.ai Flux, {len(narrations)}개 씬)...")
+        try:
+            from src.image_generator import generate_scene_image, _make_image_prompt
+            images_dir = article_dir / "images"
+            images_dir.mkdir(exist_ok=True)
+            scene_ids_list = list(narrations.keys())
+            scene_titles_map = {}
+            # 씬 제목 파싱
+            import re as _re
+            for m in _re.finditer(r'##\s+\[SCENE\s+(\d+)\s*-\s*([^\]]+)\]', script_md, _re.IGNORECASE):
+                scene_titles_map[m.group(1).zfill(2)] = m.group(2).strip()
+
+            for sid, narration_text in narrations.items():
+                img_path = str(images_dir / f"scene_{sid}.jpg")
+                if not Path(img_path).exists():
+                    scene_title = scene_titles_map.get(sid, "News")
+                    ok = await asyncio.to_thread(
+                        generate_scene_image, scene_title, narration_text, img_path
+                    )
+                    if ok:
+                        yield event("image", "running", f"씬 {sid} 이미지 완료")
+            yield event("image", "done", f"{len(narrations)}개 씬 이미지 생성 완료")
+        except Exception as e:
+            yield event("image", "error", f"이미지 생성 실패 (썸네일 사용): {e}")
+
+        # 3. TTS
         yield event("tts", "running", "음성 생성 중 (ElevenLabs)...")
         try:
             from src.tts import TTSGenerator
