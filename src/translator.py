@@ -4,8 +4,8 @@ import re
 import subprocess
 
 
-def translate_to_korean(sentences: list[str]) -> list[str]:
-    """영어 문장 리스트를 한국어로 번역. 실패 시 원문 반환."""
+def translate_to_korean(sentences: list[str], max_retries: int = 3) -> list[str]:
+    """영어 문장 리스트를 한국어로 번역. 최대 3회 재시도, 실패 시 빈 목록 반환."""
     if not sentences:
         return []
 
@@ -17,26 +17,29 @@ def translate_to_korean(sentences: list[str]) -> list[str]:
         'Format: ["번역1", "번역2", ...]'
     )
 
-    try:
-        result = subprocess.run(
-            ["claude", "--print", "--dangerously-skip-permissions",
-             "--model", "claude-haiku-4-5-20251001"],
-            input=prompt, capture_output=True, text=True, timeout=60,
-        )
-        text = result.stdout.strip()
-        # greedy 매칭으로 전체 배열 캡처
-        m = re.search(r'\[.*\]', text, re.DOTALL)
-        if m:
+    for attempt in range(max_retries):
+        try:
+            result = subprocess.run(
+                ["claude", "--print", "--dangerously-skip-permissions",
+                 "--model", "claude-haiku-4-5-20251001"],
+                input=prompt, capture_output=True, text=True, timeout=90,
+            )
+            text = result.stdout.strip()
+            m = re.search(r'\[.*\]', text, re.DOTALL)
+            if not m:
+                continue
             parsed = json.loads(m.group())
-            if len(parsed) == len(sentences):
-                # 영어 그대로 반환된 경우(번역 실패) 감지
-                if any(p.strip() == s.strip() for p, s in zip(parsed, sentences)):
-                    return []   # 실패 신호 — 캐시 저장 안 함
-                return parsed
-    except Exception:
-        pass
+            if len(parsed) != len(sentences):
+                continue
+            # 한글 포함 여부로 번역 성공 판단
+            has_korean = any(any('가' <= c <= '힣' for c in p) for p in parsed)
+            if not has_korean:
+                continue
+            return parsed
+        except Exception:
+            continue
 
-    return []  # 실패 시 빈 목록 반환 (fallback 영어 저장 방지)
+    return []
 
 
 def translate_srt_sentences(srt_path: str) -> list[dict]:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import feedparser
 import requests
+import trafilatura
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
@@ -118,17 +119,48 @@ def _fetch_feed(url: str) -> list[Article]:
         return []
 
 
+def fetch_full_content(url: str) -> str:
+    """기사 URL에서 전문(full body)을 추출한다."""
+    try:
+        resp = requests.get(url, headers=_HEADERS, timeout=12)
+        resp.raise_for_status()
+        text = trafilatura.extract(resp.text, include_comments=False, no_fallback=False)
+        return (text or "").strip()[:6000]   # 최대 6000자
+    except Exception:
+        return ""
+
+
 class NewsFetcher:
     def fetch(self, category: str = "technology", count: int = 10) -> list[Article]:
         urls = RSS_FEEDS.get(category, RSS_FEEDS["general"])
         articles: list[Article] = []
         for url in urls:
             articles.extend(_fetch_feed(url))
-            if len(articles) >= count * 3:   # 셔플용 여유분
+            if len(articles) >= count * 3:
                 break
-        # 최신순 정렬
         articles.sort(key=lambda a: a.published_at, reverse=True)
         return articles[:count]
+
+    def find_related(self, article: Article, category: str, count: int = 2) -> list[Article]:
+        """선택된 기사와 키워드가 겹치는 관련 기사를 반환한다."""
+        stop = {'the','a','an','is','are','was','were','to','of','in','for',
+                'on','with','at','by','from','as','it','its','this','that',
+                'and','or','but','has','have','had','be','been','will','would'}
+        keywords = {w.lower() for w in re.split(r'\W+', article.title)
+                    if len(w) > 3 and w.lower() not in stop}
+
+        candidates = self.fetch(category=category, count=20)
+        scored = []
+        for a in candidates:
+            if a.url == article.url:
+                continue
+            a_words = {w.lower() for w in re.split(r'\W+', a.title)}
+            overlap = len(keywords & a_words)
+            if overlap >= 1:
+                scored.append((overlap, a))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [a for _, a in scored[:count]]
 
     def prepare_workspace(self, article: Article, base_dir: Path) -> Path:
         base_dir.mkdir(parents=True, exist_ok=True)
