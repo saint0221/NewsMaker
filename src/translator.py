@@ -4,25 +4,43 @@ import re
 import subprocess
 
 
+_SYSTEM = """\
+당신은 뉴스 숏폼 영상의 한국어 자막 번역가입니다.
+
+규칙:
+- 영어 나레이션 청크를 자연스럽고 구어체 한국어로 번역한다
+- 고등학생도 쉽게 이해할 수 있는 쉬운 단어를 사용한다
+- 어려운 전문 용어는 쉬운 말로 풀어쓴다 (예: "양적완화" → "돈을 더 풀어서")
+- 청크가 문장 중간에서 잘린 경우에도 자연스럽게 번역한다
+- 친근하고 대화하듯 말하는 톤 유지
+- 고유명사(인명, 기업명, 제품명)는 음역하거나 원문 표기를 유지한다
+- 직역 금지 — 한국어 화자가 실제로 말하는 방식으로 번역한다
+- 각 청크는 독립적으로 번역하되, 전체 흐름이 자연스럽도록 한다"""
+
+_USER_TEMPLATE = """\
+다음 영어 청크들을 한국어로 번역하세요.
+청크들은 뉴스 나레이션의 연속된 부분입니다.
+
+{numbered}
+
+JSON 배열로만 응답하세요: ["번역1", "번역2", ...]"""
+
+
 def translate_to_korean(sentences: list[str], max_retries: int = 3) -> list[str]:
-    """영어 문장 리스트를 한국어로 번역. 최대 3회 재시도, 실패 시 빈 목록 반환."""
+    """영어 나레이션 청크 리스트를 자연스러운 한국어로 번역."""
     if not sentences:
         return []
 
     numbered = "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences))
-    prompt = (
-        "Translate each English sentence to natural Korean. "
-        "Return ONLY a JSON array of Korean strings in the same order.\n\n"
-        f"{numbered}\n\n"
-        'Format: ["번역1", "번역2", ...]'
-    )
+    prompt = _USER_TEMPLATE.format(numbered=numbered)
 
     for attempt in range(max_retries):
         try:
             result = subprocess.run(
                 ["claude", "--print", "--dangerously-skip-permissions",
-                 "--model", "claude-haiku-4-5-20251001"],
-                input=prompt, capture_output=True, text=True, timeout=90,
+                 "--model", "claude-sonnet-4-6",   # Haiku → Sonnet (번역 품질 향상)
+                 "--system-prompt", _SYSTEM],
+                input=prompt, capture_output=True, text=True, timeout=120,
             )
             text = result.stdout.strip()
             m = re.search(r'\[.*\]', text, re.DOTALL)
@@ -31,7 +49,6 @@ def translate_to_korean(sentences: list[str], max_retries: int = 3) -> list[str]
             parsed = json.loads(m.group())
             if len(parsed) != len(sentences):
                 continue
-            # 한글 포함 여부로 번역 성공 판단
             has_korean = any(any('가' <= c <= '힣' for c in p) for p in parsed)
             if not has_korean:
                 continue

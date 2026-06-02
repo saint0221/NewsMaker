@@ -34,27 +34,41 @@
     color: #666;
   }
 
-  /* Category tabs */
-  .cat-row {
+  /* Topic search */
+  .search-row {
     display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    max-width: 680px;
     margin-bottom: 20px;
   }
-  .cat-btn {
+  .topic-input {
+    flex: 1;
     background: #13131a;
     border: 1px solid #1e1e2a;
-    border-radius: 20px;
-    color: #888;
-    font-size: 13px;
-    font-weight: 500;
-    padding: 6px 16px;
-    cursor: pointer;
-    transition: all .15s;
+    border-radius: 10px;
+    color: #e8e8f0;
+    font-size: 15px;
+    padding: 12px 18px;
+    outline: none;
+    transition: border-color .15s;
   }
-  .cat-btn:hover { border-color: #333; color: #ccc; }
-  .cat-btn.active { background: #1a1a30; border-color: #6c63ff; color: #6c63ff; }
+  .topic-input:focus { border-color: #6c63ff; }
+  .topic-input::placeholder { color: #444; }
+  .search-btn {
+    background: #6c63ff;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 12px 22px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: opacity .15s;
+  }
+  .search-btn:hover { opacity: .85; }
+  .search-btn:disabled { opacity: .4; cursor: default; }
 
   .fetch-btn {
     display: flex;
@@ -286,32 +300,17 @@
   <p>뉴스 기사 → 영어 대본 → TTS → CapCut 프로젝트</p>
 </header>
 
-<div class="cat-row">
-  <button class="cat-btn active" onclick="setCategory('technology', this)">Technology</button>
-  <button class="cat-btn" onclick="setCategory('business', this)">Business</button>
-  <button class="cat-btn" onclick="setCategory('science', this)">Science</button>
-  <button class="cat-btn" onclick="setCategory('health', this)">Health</button>
-  <button class="cat-btn" onclick="setCategory('entertainment', this)">Entertainment</button>
-  <button class="cat-btn" onclick="setCategory('sports', this)">Sports</button>
-</div>
-
-<button class="fetch-btn" id="fetchBtn" onclick="fetchNews()">
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M4 4h16v2H4zM4 10h16v2H4zM4 16h10v2H4z"/>
-  </svg>
-  뉴스 불러오기
-</button>
-
-<div id="news-section" class="hidden"></div>
-
-<div id="generate-wrap" class="hidden">
-  <button class="gen-btn" id="genBtn" onclick="runPipeline()">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-      <polygon points="5 3 19 12 5 21 5 3"/>
-    </svg>
-    영상 생성
+<div class="search-row">
+  <input class="topic-input" id="topicInput" type="text"
+         placeholder="뉴스 주제를 입력하세요 (예: AI 반도체, 기후변화, 한국 경제)"
+         onkeydown="if(event.key==='Enter') startPipeline()">
+  <button class="search-btn" id="searchBtn" onclick="startPipeline()">
+    ▶ 영상 생성
   </button>
 </div>
+
+<div id="news-section" class="hidden"></div>
+<div id="generate-wrap" class="hidden"></div>
 
 <div id="progress-section" class="hidden">
   <h3>진행 상황</h3>
@@ -343,6 +342,13 @@
       <div class="step-msg" id="msg-tts">ElevenLabs 영어 나레이션</div>
     </div>
   </div>
+  <div class="step" id="step-translate">
+    <div class="step-icon">한</div>
+    <div class="step-body">
+      <div class="step-label">한국어 번역</div>
+      <div class="step-msg" id="msg-translate">씬별 6단어 청크 번역</div>
+    </div>
+  </div>
   <div class="step" id="step-capcut">
     <div class="step-icon">▶</div>
     <div class="step-body">
@@ -366,62 +372,107 @@
 <script>
 let selectedIndex = null;
 let articles = [];
-let currentCategory = 'technology';
+let currentTopic = '';
 
-function setCategory(cat, el) {
-  currentCategory = cat;
-  document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
-  el.classList.add('active');
-}
+async function startPipeline() {
+  const input = document.getElementById('topicInput');
+  const topic = input.value.trim();
+  if (!topic) { input.focus(); return; }
+  currentTopic = topic;
 
-async function fetchNews() {
-  const btn = document.getElementById('fetchBtn');
+  const btn = document.getElementById('searchBtn');
   btn.disabled = true;
-  btn.innerHTML = '<span class="spin">⟳</span> 불러오는 중...';
+  btn.textContent = '생성 중...';
 
-  document.getElementById('news-section').classList.add('hidden');
-  document.getElementById('generate-wrap').classList.add('hidden');
   document.getElementById('progress-section').classList.add('hidden');
   document.getElementById('result-section').classList.add('hidden');
-  selectedIndex = null;
+
+  // 진행 단계 초기화
+  ['script','factcheck','image','translate','tts','capcut'].forEach(s => {
+    const el = document.getElementById('step-' + s);
+    if (el) el.className = 'step';
+  });
+  document.getElementById('progress-section').classList.remove('hidden');
 
   try {
-    const res = await fetch('/api/news', {
+    const res = await fetch('/api/run-topic', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ category: currentCategory }),
+      body: JSON.stringify({ topic, selected_indices: [] }),
     });
-    articles = await res.json();
-    renderNews(articles);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try { handleEvent(JSON.parse(line.slice(6))); } catch {}
+      }
+    }
   } catch (e) {
-    alert('뉴스 불러오기 실패: ' + e.message);
+    alert('오류: ' + e.message);
   } finally {
     btn.disabled = false;
-    btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v2H4zM4 10h16v2H4zM4 16h10v2H4z"/></svg> 뉴스 불러오기`;
+    btn.textContent = '▶ 영상 생성';
   }
 }
+
+// 하위 호환용 (사용 안 함)
+async function searchTopic() { startPipeline(); }
+
+// 선택된 기사 인덱스 집합 (비어있으면 전체 사용)
+let selectedIndices = new Set();
 
 function renderNews(list) {
   const section = document.getElementById('news-section');
   section.innerHTML = '';
+  selectedIndices = new Set(list.map(a => a.index)); // 기본값: 전체 선택
+
   list.forEach(a => {
     const card = document.createElement('div');
-    card.className = 'news-card';
+    card.className = 'news-card selected'; // 초기엔 모두 선택 상태
     card.dataset.index = a.index;
-    card.onclick = () => selectCard(a.index);
+    card.onclick = () => toggleCard(a.index, card);
     card.innerHTML = `
       ${a.image_url ? `<img class="card-thumb" src="${a.image_url}" onerror="this.style.display='none'" alt="">` : '<div class="card-thumb"></div>'}
       <div class="card-body">
-        <div class="card-source">${a.source}</div>
+        <div class="card-source">${a.source} · ${a.published_at || ''}</div>
         <div class="card-title">${a.title}</div>
         <div class="card-desc">${a.description}</div>
       </div>`;
     section.appendChild(card);
   });
   section.classList.remove('hidden');
+  if (list.length > 0) {
+    document.getElementById('generate-wrap').classList.remove('hidden');
+    updateGenBtn();
+  }
+}
+
+function toggleCard(index, card) {
+  if (selectedIndices.has(index)) {
+    selectedIndices.delete(index);
+    card.classList.remove('selected');
+  } else {
+    selectedIndices.add(index);
+    card.classList.add('selected');
+  }
+  updateGenBtn();
+}
+
+function updateGenBtn() {
+  const btn = document.getElementById('genBtn');
+  const n = selectedIndices.size;
+  btn.textContent = n > 0 ? `▶ 영상 생성 (${n}개 기사)` : '▶ 영상 생성';
 }
 
 function selectCard(index) {
+  // 하위 호환 유지
   selectedIndex = index;
   document.querySelectorAll('.news-card').forEach(c => {
     c.classList.toggle('selected', parseInt(c.dataset.index) === index);
@@ -430,23 +481,29 @@ function selectCard(index) {
 }
 
 async function runPipeline() {
-  if (selectedIndex === null) return;
+  startPipeline(); // startPipeline으로 위임
+}
 
+async function _runPipeline_legacy() {
+  if (!currentTopic) return;
   const genBtn = document.getElementById('genBtn');
-  genBtn.disabled = true;
+  if (genBtn) genBtn.disabled = true;
 
-  const steps = ['script', 'tts', 'capcut'];
-  steps.forEach(s => {
+  ['script','factcheck','image','translate','tts','capcut'].forEach(s => {
     const el = document.getElementById('step-' + s);
-    el.className = 'step';
+    if (el) el.className = 'step';
   });
   document.getElementById('progress-section').classList.remove('hidden');
   document.getElementById('result-section').classList.add('hidden');
 
-  const res = await fetch('/api/run', {
+  // 선택된 기사 인덱스 (비어있으면 전체)
+  const selected = selectedIndices.size > 0 ? [...selectedIndices] : articles.map(a => a.index);
+
+  // 주제 기반 파이프라인 실행
+  const res = await fetch('/api/run-topic', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ index: selectedIndex }),
+    body: JSON.stringify({ topic: currentTopic, selected_indices: selected }),
   });
 
   const reader = res.body.getReader();

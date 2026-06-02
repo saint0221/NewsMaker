@@ -61,20 +61,7 @@ def _create_thumbnail_video(output_path: str, duration: float, image_url: str):
         Path(img_path).unlink(missing_ok=True)
 
 
-def _make_chunks(words: list[dict]) -> list[str]:
-    """words.json → 8단어 청크 영어 텍스트 목록."""
-    chunks, i = [], 0
-    while i < len(words):
-        seg_start = words[i]["start"]
-        group, j = [], i
-        while j < len(words) and len(group) < 8 and words[j]["end"] - seg_start < 3.5:
-            group.append(words[j]["text"])
-            j += 1
-        if j == i:
-            j += 1
-        chunks.append(" ".join(group))
-        i = j
-    return chunks
+from src.chunker import chunk_words as _make_chunks   # 단일 정규 함수
 
 
 def _translate_chunks(words: list[dict]) -> list[str]:
@@ -132,6 +119,45 @@ def _extract_source(article_dir: Path) -> str:
     return "News"
 
 
+def _ensure_sources_html(article_dir: Path) -> None:
+    """sources.html이 없으면 article.json으로 최소 버전을 생성한다."""
+    sources_path = article_dir / "sources.html"
+    if sources_path.exists():
+        return
+    article_json = article_dir / "article.json"
+    if not article_json.exists():
+        return
+    try:
+        from datetime import datetime
+        a = json.loads(article_json.read_text())
+        title = a.get("title", "-")
+        source = a.get("source", "-")
+        url = a.get("url", "#")
+        pub = (a.get("published_at") or "")[:10]
+        src_url = a.get("sourceUrl", url)
+        html = f"""<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8">
+<title>출처 기록</title>
+<style>body{{font-family:-apple-system,sans-serif;max-width:800px;margin:40px auto;padding:0 20px;background:#f8f8f8}}
+.card{{background:white;border-radius:10px;padding:20px;margin:16px 0;box-shadow:0 1px 4px rgba(0,0,0,.08)}}
+.badge{{display:inline-block;background:#4a90d9;color:white;font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;margin-bottom:10px}}
+h2{{font-size:16px;margin:6px 0}}h2 a{{color:#1a73e8;text-decoration:none}}
+.meta{{font-size:13px;color:#666;margin-top:8px}}.ts{{font-size:12px;color:#aaa;text-align:right;margin-top:20px}}</style>
+</head><body>
+<h1 style="font-size:20px;color:#444;border-bottom:2px solid #ddd;padding-bottom:10px">📰 뉴스 크롤링 출처 기록</h1>
+<div class="card">
+  <div class="badge">주요 기사</div>
+  <h2><a href="{url}" target="_blank">{title}</a></h2>
+  <div class="meta">📰 {source} &nbsp; 📅 {pub}</div>
+  <div style="font-size:11px;color:#aaa;margin-top:6px;word-break:break-all">{url}</div>
+</div>
+<p class="ts">생성: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+</body></html>"""
+        sources_path.write_text(html, encoding="utf-8")
+    except Exception:
+        pass
+
+
 def export(
     article_dir: Path,
     script_md: str,
@@ -146,6 +172,9 @@ def export(
 
     Returns: CapCut 프로젝트 경로
     """
+    # 출처 기록 보장 — 없으면 article.json으로라도 생성
+    _ensure_sources_html(article_dir)
+
     title_match = re.search(
         r'^#\s+(?:대본:\s*|YouTube Shorts Script:\s*|News Script:\s*)?(.+)',
         script_md, re.MULTILINE
@@ -167,10 +196,18 @@ def export(
                 return re.sub(r'^["""\'\']+|["""\'\']+$', '', m.group(1).strip())
         return ""
 
-    # AI 이미지 생성 (images/ 폴더)
+    # AI 이미지 — 기사당 1장 생성, 전 씬 공유
     from src.image_generator import generate_scene_image
     images_dir = article_dir / "images"
     images_dir.mkdir(exist_ok=True)
+
+    article_image_path = str(images_dir / "article.jpg")
+    if not Path(article_image_path).exists():
+        # 첫 씬 나레이션으로 대표 이미지 생성
+        first_narration = _extract_narration(script_md, scene_ids[0]) if scene_ids else ""
+        generate_scene_image(common_title, first_narration, article_image_path)
+
+    shared_image = article_image_path if Path(article_image_path).exists() else None
 
     # 스타일드 비디오 생성 (양피지 레이아웃)
     from src.frame_renderer import create_styled_video
@@ -186,40 +223,38 @@ def export(
         words_path = article_dir / "subtitles" / f"scene_{sid}_words.json"
         words = json.loads(words_path.read_text()) if words_path.exists() else []
 
-        # 청크별 한국어 번역 (8단어 청크 단위, 1:1 매핑)
         chunk_ko_path = article_dir / "subtitles" / f"scene_{sid}_chunk_ko.json"
-        # 캐시가 없거나 번역 실패(빈 배열)인 경우 재시도
         if words:
+            expected = len(_make_chunks(words))
             cached = json.loads(chunk_ko_path.read_text()) if chunk_ko_path.exists() else []
-            if not cached:
+            if not cached or len(cached) != expected:
                 result = _translate_chunks(words)
-                if result:  # 성공한 경우만 저장
+                if result and len(result) == expected:
                     chunk_ko_path.write_text(json.dumps(result, ensure_ascii=False, indent=2))
                     cached = result
+            # 불변식: ko_chunks 수 == 청크 수 (어긋나면 즉시 에러)
+            if cached and len(cached) != expected:
+                raise RuntimeError(
+                    f"씬 {sid} ko_chunks 수 불일치: {len(cached)} != {expected}. "
+                    "번역을 재실행하거나 캐시를 삭제하세요."
+                )
         else:
             cached = []
         ko_chunks = cached
 
         scene_headline = common_title
 
-        # AI 이미지 생성 (캐시 있으면 재사용)
-        ai_image_path = str(images_dir / f"scene_{sid}.jpg")
-        if not Path(ai_image_path).exists():
-            narration_text = _extract_narration(script_md, sid)
-            generate_scene_image(scene_headline, narration_text, ai_image_path)
-
-        # 이미지 경로 결정: AI 생성 > 기사 썸네일 > None
-        final_image_path = ai_image_path if Path(ai_image_path).exists() else None
-
+        # 이미지 경로: 기사 공유 이미지 > 기사 썸네일 > None
         create_styled_video(
             output_path=video_path,
             headline=scene_headline,
             source=_extract_source(article_dir),
-            image_url=image_url or None,
+            image_url=final_image if not shared_image else None,
             words=words,
             ko_chunks=ko_chunks,
             total_duration=dur,
-            image_path=final_image_path,
+            image_path=shared_image,
+            scene_index=int(sid) - 1,   # 씬별 다른 Ken Burns 프리셋
         )
 
     # article.json에 URL 저장

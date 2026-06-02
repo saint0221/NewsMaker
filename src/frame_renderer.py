@@ -375,6 +375,21 @@ def _create_ken_burns_video(
         return False
 
 
+# 씬별 Ken Burns 애니메이션 프리셋 (6가지 변형)
+# 각 항목: (zoom_dir, pan_x_ratio, pan_y_ratio)
+# zoom_dir: "in"=줌인, "out"=줌아웃
+# pan_x_ratio: 수평 이동량 (양수=오른쪽, 음수=왼쪽), 이미지 너비 대비 비율
+# pan_y_ratio: 수직 이동량 (양수=아래, 음수=위), 이미지 높이 대비 비율
+_KB_PRESETS = [
+    ("in",  0.0,   0.0),   # 씬01: 중앙 줌인 (기본)
+    ("out", 0.08,  0.0),   # 씬02: 줌아웃 + 좌로 패닝
+    ("in", -0.08,  0.0),   # 씬03: 줌인 + 우로 패닝
+    ("out", 0.0,   0.06),  # 씬04: 줌아웃 + 위로 패닝
+    ("in",  0.0,  -0.06),  # 씬05: 줌인 + 아래로 패닝
+    ("out",-0.06,  0.06),  # 씬06: 줌아웃 + 대각선 패닝
+]
+
+
 def create_styled_video(
     output_path: str,
     headline: str,
@@ -384,7 +399,8 @@ def create_styled_video(
     total_duration: float,
     ko_sentences: list[dict] | None = None,
     ko_chunks: list[str] | None = None,
-    image_path: str | None = None,   # AI 생성 이미지 로컬 경로 (Ken Burns용)
+    image_path: str | None = None,
+    scene_index: int = 0,   # 0~5: Ken Burns 프리셋 선택
 ):
     """
     words 타이밍에 맞춰 스타일드 프레임을 생성하고 비디오로 조립한다.
@@ -410,19 +426,11 @@ def create_styled_video(
         Path(frame_path).unlink(missing_ok=True)
         return
 
-    # 8단어 청크 그룹화 — ko_chunks[gi]가 각 그룹의 한국어 번역
+    # 그룹화 — 단일 정규 함수(src/chunker.py) 사용
+    from src.chunker import chunk_words_with_data
+    raw_groups = chunk_words_with_data(words)
     groups: list[dict] = []
-    i = 0
-    while i < len(words):
-        seg_start = words[i]["start"]
-        group_words = []
-        j = i
-        while j < len(words) and len(group_words) < 6 and words[j]["end"] - seg_start < 3.0:
-            group_words.append(words[j])
-            j += 1
-        if j == i:
-            j += 1
-        gi = len(groups)
+    for gi, group_words in enumerate(raw_groups):
         ko = ko_chunks[gi] if gi < len(ko_chunks) else ""
         groups.append({
             "line":  " ".join(w["text"] for w in group_words),
@@ -431,7 +439,6 @@ def create_styled_video(
             "start": group_words[0]["start"],
             "end":   group_words[-1]["end"],
         })
-        i = j
 
     # [-1, 0, +1, +2] = 4개 엔트리 표시 (글자 크기 확대로 조정)
     events: list[dict] = []
@@ -554,13 +561,34 @@ def create_styled_video(
             text_layer = text_layer_cache[key]
 
             if hero_raw is not None:
-                # Ken Burns: 프레임별 줌 크롭 → 히어로 영역에 붙이기
+                # Ken Burns: 씬별 프리셋 적용
+                preset = _KB_PRESETS[scene_index % len(_KB_PRESETS)]
+                zoom_dir, pan_x_ratio, pan_y_ratio = preset
                 progress = fn / max(total_frames - 1, 1)
-                zoom = 1.0 + 0.08 * progress
+
+                # 줌 방향 (in: 1.0→1.08, out: 1.08→1.0)
+                if zoom_dir == "in":
+                    zoom = 1.0 + 0.08 * progress
+                else:
+                    zoom = 1.08 - 0.08 * progress
+
                 crop_w = int(IMG_W / zoom)
                 crop_h = int(IMG_H / zoom)
-                cx = (hero_raw.width - crop_w) // 2
-                cy = (hero_raw.height - crop_h) // 2
+
+                # 패닝: 시작→끝 선형 이동
+                max_pan_x = int(hero_raw.width  * abs(pan_x_ratio))
+                max_pan_y = int(hero_raw.height * abs(pan_y_ratio))
+                pan_x = int(max_pan_x * progress * (1 if pan_x_ratio >= 0 else -1))
+                pan_y = int(max_pan_y * progress * (1 if pan_y_ratio >= 0 else -1))
+
+                # 중앙 기준 + 패닝 오프셋
+                cx = (hero_raw.width  - crop_w) // 2 + pan_x
+                cy = (hero_raw.height - crop_h) // 2 + pan_y
+
+                # 경계 클램프
+                cx = max(0, min(cx, hero_raw.width  - crop_w))
+                cy = max(0, min(cy, hero_raw.height - crop_h))
+
                 kb = hero_raw.crop((cx, cy, cx + crop_w, cy + crop_h))
                 kb = kb.resize((IMG_W, IMG_H), Image.LANCZOS)
                 kb = kb.point(lambda p: int(p * 0.55))  # 다크닝
@@ -578,10 +606,14 @@ def create_styled_video(
             "ffmpeg", "-y",
             "-framerate", str(fps),
             "-i", str(Path(numbered_dir) / "frame_%06d.jpg"),
-            "-vf", "format=yuv420p",
+            # 오디오와 정확히 같은 길이로 고정 → freeze 프레임 불필요
+            "-t", str(total_duration),
+            # JPG 풀레인지(yuvj420p) → TV 리미티드(yuv420p) 강제 변환
+            "-vf", "scale=in_range=full:out_range=tv,format=yuv420p",
             "-c:v", "libx264", "-preset", "fast",
             "-profile:v", "high", "-level", "4.1",
             "-pix_fmt", "yuv420p",
+            "-color_range", "1",
             "-an", output_path,
             ], check=True, capture_output=True)
 

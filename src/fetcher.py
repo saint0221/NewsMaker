@@ -13,6 +13,13 @@ _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 }
 
+KOREAN_RSS_FEEDS = [
+    "https://www.yna.co.kr/rss/news.xml",          # 연합뉴스
+    "https://www.hani.co.kr/rss/",                  # 한겨레
+    "https://www.chosun.com/arc/outboundfeeds/rss/?outputType=xml",  # 조선일보
+    "https://fs.jtbc.co.kr/RSS/newsflash.xml",      # JTBC (YTN·MBC·SBS·KBS는 RSS 미제공)
+]
+
 RSS_FEEDS: dict[str, list[str]] = {
     "technology": [
         "https://www.theverge.com/rss/index.xml",
@@ -128,6 +135,192 @@ def fetch_full_content(url: str) -> str:
         return (text or "").strip()[:6000]   # 최대 6000자
     except Exception:
         return ""
+
+
+def _has_korean(text: str) -> bool:
+    return any('가' <= c <= '힣' for c in text)
+
+
+def _translate_query_to_english(topic: str) -> str:
+    """한국어 주제를 영어 검색 키워드로 변환한다."""
+    import subprocess
+    prompt = (
+        f"Translate this Korean news topic to concise English search keywords "
+        f"(2-5 words max, no punctuation):\n{topic}\n\nReturn ONLY the English keywords."
+    )
+    try:
+        result = subprocess.run(
+            ["claude", "--print", "--dangerously-skip-permissions",
+             "--model", "claude-haiku-4-5-20251001"],
+            input=prompt, capture_output=True, text=True, timeout=15,
+        )
+        translated = result.stdout.strip().strip('"').strip("'")
+        if translated and not _has_korean(translated):
+            return translated
+    except Exception:
+        pass
+    return topic
+
+
+def _search_naver_news(topic: str, count: int = 5) -> list[Article]:
+    """Naver 뉴스 검색 API로 국내 기사를 검색한다."""
+    import os
+    client_id     = os.environ.get("NAVER_CLIENT_ID", "")
+    client_secret = os.environ.get("NAVER_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        return []
+    try:
+        resp = requests.get(
+            "https://openapi.naver.com/v1/search/news.json",
+            headers={
+                "X-Naver-Client-Id":     client_id,
+                "X-Naver-Client-Secret": client_secret,
+            },
+            params={"query": topic, "display": count * 2, "sort": "sim"},  # sim=관련도순
+            timeout=10,
+        )
+        resp.raise_for_status()
+        articles = []
+        for item in resp.json().get("items", []):
+            title = re.sub(r"<[^>]+>", "", item.get("title", ""))
+            desc  = re.sub(r"<[^>]+>", "", item.get("description", ""))
+            articles.append(Article(
+                title=title,
+                description=desc[:300],
+                content=desc,
+                url=item.get("originallink") or item.get("link", ""),
+                image_url=None,
+                source=item.get("source", "네이버뉴스"),
+                published_at=item.get("pubDate", ""),
+            ))
+            if len(articles) >= count:
+                break
+        return articles
+    except Exception:
+        return []
+
+
+def _search_korean_rss(topic: str, count: int = 5) -> list[Article]:
+    """국내 언론사 RSS에서 한국어 키워드로 기사를 검색한다."""
+    keywords = {w for w in re.split(r'[\s,]+', topic) if len(w) > 1}
+    articles: list[Article] = []
+    for url in KOREAN_RSS_FEEDS:
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=8)
+            resp.raise_for_status()
+            feed = feedparser.parse(resp.content)
+            source = feed.feed.get("title", url.split("/")[2])
+            for e in feed.entries:
+                title = _strip_html(e.get("title", ""))
+                desc  = _strip_html(e.get("summary", ""))
+                combined = title + " " + desc
+                if any(k in combined for k in keywords):
+                    articles.append(Article(
+                        title=title,
+                        description=desc[:300],
+                        content=desc,
+                        url=e.get("link", ""),
+                        image_url=_extract_image(e),
+                        source=source,
+                        published_at=_parse_published(e),
+                    ))
+        except Exception:
+            continue
+
+    # 키워드 포함 개수로 정렬
+    scored = []
+    for a in articles:
+        score = sum(1 for k in keywords if k in a.title + a.description)
+        scored.append((score, a))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [a for _, a in scored[:count]]
+
+
+def search_by_topic(topic: str, count: int = 5) -> list[Article]:
+    """
+    주제로 최신 뉴스를 검색한다.
+    - 한국어 입력: 국내 RSS 우선 검색 + 영어 번역 후 NewsAPI 병행
+    - 영어 입력: NewsAPI /everything → 관련성 기준 필터링
+    - 폴백: RSS 전체에서 키워드 매칭
+    """
+    import os
+
+    is_korean = _has_korean(topic)
+
+    # 한국어 쿼리: Naver API → RSS 순으로 검색
+    if is_korean:
+        naver = _search_naver_news(topic, count)
+        if naver:
+            return naver
+        rss = _search_korean_rss(topic, count)
+        if rss:
+            return rss
+
+    # 영어로 변환 후 NewsAPI 검색
+    search_query = _translate_query_to_english(topic) if is_korean else topic
+
+    api_key = os.environ.get("NEWS_API_KEY", "")
+    if api_key:
+        try:
+            resp = requests.get(
+                "https://newsapi.org/v2/everything",
+                params={
+                    "apiKey": api_key,
+                    "q": search_query,
+                    "language": "en",
+                    "pageSize": count * 3,     # 더 많이 가져와서 필터링
+                    "sortBy": "relevancy",      # 관련성 우선
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            # 쿼리 키워드가 제목 또는 설명에 포함된 기사만 채택
+            keywords = {w.lower() for w in re.split(r'\W+', search_query) if len(w) > 2}
+            articles = []
+            for item in data.get("articles", []):
+                title = item.get("title", "") or ""
+                desc  = item.get("description", "") or ""
+                # 키워드가 하나라도 포함된 기사만
+                combined = (title + " " + desc).lower()
+                if not any(k in combined for k in keywords):
+                    continue
+                content = item.get("content") or desc
+                if "[+" in content:
+                    content = content.split("[+")[0].strip()
+                articles.append(Article(
+                    title=title,
+                    description=desc,
+                    content=content,
+                    url=item.get("url", ""),
+                    image_url=item.get("urlToImage"),
+                    source=item.get("source", {}).get("name", ""),
+                    published_at=item.get("publishedAt", ""),
+                ))
+                if len(articles) >= count:
+                    break
+
+            if articles:
+                return articles
+        except Exception:
+            pass
+
+    # 폴백: RSS 전체에서 키워드 매칭
+    keywords = {w.lower() for w in re.split(r'\W+', search_query)
+                if len(w) > 2 and w.lower() not in {'the','a','an','is','of','in','for','and','or'}}
+    all_articles: list[Article] = []
+    for feed_urls in RSS_FEEDS.values():
+        for url in feed_urls:
+            all_articles.extend(_fetch_feed(url))
+    scored = []
+    for a in all_articles:
+        combined = (a.title + " " + a.description).lower()
+        score = sum(1 for k in keywords if k in combined)
+        if score > 0:
+            scored.append((score, a))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [a for _, a in scored[:count]]
 
 
 class NewsFetcher:
