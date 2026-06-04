@@ -74,7 +74,7 @@ Write EXACTLY this format:
 Return ONLY the script. No extra commentary."""
 
 
-def _save_sources_html(article_dir: Path, primary, full_body: str, related: list) -> None:
+def _save_sources_html(article_dir: Path, primary, full_body: str, related: list, related_bodies: list | None = None) -> None:
     """크롤링된 기사 출처를 sources.html로 저장한다."""
     from datetime import datetime
 
@@ -97,8 +97,10 @@ def _save_sources_html(article_dir: Path, primary, full_body: str, related: list
         primary.title, primary.source, primary.url,
         primary.published_at, len(full_body), "primary"
     )
+    bodies = related_bodies or []
     for i, r in enumerate(related, 1):
-        cards += card(r.title, r.source, r.url, r.published_at, 0, i)
+        body_len = len(bodies[i-1]) if i-1 < len(bodies) else 0
+        cards += card(r.title, r.source, r.url, r.published_at, body_len, i)
 
     html = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -130,6 +132,29 @@ def _save_sources_html(article_dir: Path, primary, full_body: str, related: list
 </html>"""
 
     (article_dir / "sources.html").write_text(html, encoding="utf-8")
+
+
+def _extract_refined_query(title: str, body: str) -> str:
+    """주요 기사 내용에서 관련 기사 검색에 쓸 핵심 키워드를 추출한다."""
+    prompt = (
+        f"Extract 3-5 key search terms from this article to find related news articles.\n"
+        f"Title: {title}\n"
+        f"Content: {body[:500]}\n\n"
+        f"Rules:\n"
+        f"- Focus on the specific topic, people, organizations, or events\n"
+        f"- Return keywords in the same language as the title\n"
+        f"- Return ONLY the search query string, nothing else"
+    )
+    try:
+        result = subprocess.run(
+            ["claude", "--print", "--dangerously-skip-permissions",
+             "--model", "claude-haiku-4-5-20251001"],
+            input=prompt, capture_output=True, text=True, timeout=20,
+        )
+        q = result.stdout.strip().strip('"').strip("'")
+        return q if q else title
+    except Exception:
+        return title
 
 
 def _run_claude(prompt: str) -> str:
@@ -275,19 +300,34 @@ async def run_topic_pipeline(req: TopicRequest):
                 "published_at": primary.published_at,
             }, ensure_ascii=False, indent=2))
 
-            # 전문 크롤링
+            # 주요 기사 전문 크롤링
             full_body = await asyncio.to_thread(fetch_full_content, primary.url)
             if not full_body:
                 full_body = primary.description or primary.content or ""
 
+            # 주요 기사 기반 키워드 재검색 → 실제 연관 기사 수집
+            yield event("script", "running", "주요 기사 분석 → 연관 기사 재검색 중...")
+            refined_query = await asyncio.to_thread(
+                _extract_refined_query, primary.title, full_body
+            )
+            yield event("script", "running", f'재검색 키워드: "{refined_query}"')
+            refined_articles = await asyncio.to_thread(
+                search_by_topic, refined_query, 6
+            )
+            # 주요 기사 URL 제외, 상위 3개 선택
+            related_arts = [
+                a for a in refined_articles if a.url != primary.url
+            ][:3]
+
             related_bodies = []
-            for r in related_arts[:3]:
+            for r in related_arts:
                 body = await asyncio.to_thread(fetch_full_content, r.url)
                 if body:
                     related_bodies.append((r.title, body))
 
             # 출처 기록
-            _save_sources_html(article_dir, primary, full_body, related_arts[:3])
+            _save_sources_html(article_dir, primary, full_body, related_arts,
+                               [b for _, b in related_bodies])
             yield event("script", "running",
                         f"크롤링 완료: 주요 기사 {len(full_body):,}자 + 관련 {len(related_bodies)}개")
 
@@ -461,7 +501,8 @@ async def run_pipeline(ref: ArticleRef, request: Request):
             return
         finally:
             # 크롤링 성공·실패 무관하게 출처 반드시 기록
-            _save_sources_html(article_dir, article, full_body, related_articles)
+            _save_sources_html(article_dir, article, full_body, related_articles,
+                               [b for _, b in related_bodies] if related_bodies else [])
 
         try:
             # 프롬프트 구성

@@ -273,13 +273,6 @@ def render_frame(
         ko_color = KO_TEXT   if is_active else KO_FADED
         en_color = BODY_TEXT if is_active else BODY_FADED
 
-        # ── 한글 — 한 줄만 (넘치면 말줄임) ──────────────────
-        if ko:
-            ko_lines_wrap = _wrap(ko, f_ko, max_text_w)
-            ko_display = ko_lines_wrap[0] if ko_lines_wrap else ko
-            draw.text((TEXT_PAD_X, ty), ko_display, font=f_ko, fill=ko_color)
-        ty += KO_H + KO_GAP
-
         # ── 영어 — 래핑 허용 (오버플로 없이 전부 표시) ──────────
         en_wrapped = _wrap(line, f_body, max_text_w)
 
@@ -308,9 +301,12 @@ def render_frame(
                     x += draw.textbbox((0, 0), before, font=f_body)[2]
                 wb = draw.textbbox((0, 0), word, font=f_body_bold)
                 ww, wh = wb[2], wb[3] - wb[1]
-                pad = 6
+                # 실제 렌더링 영역(baseline 포함)으로 박스 계산
+                bb = draw.textbbox((x, ty), word, font=f_body_bold)
+                pad_x, pad_y = 8, 6
                 _rounded_rect(draw,
-                    (x - pad, ty - pad//2, x + ww + pad, ty + wh + pad//2),
+                    (bb[0] - pad_x, bb[1] - pad_y,
+                     bb[2] + pad_x, bb[3] + pad_y),
                     radius=8, fill=HIGHLIGHT_BG)
                 draw.text((x, ty), word, font=f_body_bold, fill=HIGHLIGHT_FG)
                 x += ww + 2
@@ -320,11 +316,17 @@ def render_frame(
                 draw.text((TEXT_PAD_X, ty), wrap_line, font=f_body, fill=en_color)
 
             ty += EN_H
-            char_offset = line_end + 1  # +1 for space
+            char_offset = line_end + 1
 
-        ty -= EN_H  # 마지막 EN_H는 아래 ty+=EN_H에서 더함
-
+        ty -= EN_H
         ty += EN_H
+
+        # ── 한글 — 영어 아래 ────────────────────────────────
+        if ko:
+            ko_lines_wrap = _wrap(ko, f_ko, max_text_w)
+            ko_display = ko_lines_wrap[0] if ko_lines_wrap else ko
+            draw.text((TEXT_PAD_X, ty), ko_display, font=f_ko, fill=ko_color)
+        ty += KO_H + KO_GAP
 
         # 구분선 (활성 엔트리 아래)
         if is_active and li < len(lines) - 1:

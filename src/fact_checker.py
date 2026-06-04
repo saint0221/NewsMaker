@@ -64,6 +64,13 @@ def fact_check(script_md: str, source_texts: list[str]) -> tuple[str, list[str]]
         corrected = parts[0].strip()
         report = parts[1].strip() if len(parts) > 1 else ""
 
+        # 스크립트 앞에 분석 텍스트가 섞여 있으면 제거
+        # "# News Script:" 또는 "## [SCENE" 이전의 모든 텍스트 제거
+        import re as _re
+        script_start = _re.search(r'^(# News Script:|## \[SCENE)', corrected, _re.MULTILINE)
+        if script_start:
+            corrected = corrected[script_start.start():].strip()
+
         issues: list[str] = []
         for line in report.splitlines():
             line = line.strip()

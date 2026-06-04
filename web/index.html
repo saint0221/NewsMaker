@@ -213,7 +213,7 @@
     opacity: .35;
     transition: opacity .2s;
   }
-  .step.active, .step.done, .step.error { opacity: 1; }
+  .step.active, .step.running, .step.done, .step.error { opacity: 1; }
 
   .step-icon {
     width: 32px;
@@ -228,7 +228,7 @@
     color: #555;
     transition: background .2s, color .2s;
   }
-  .step.active .step-icon { background: #1e1e50; color: #6c63ff; animation: pulse 1.2s infinite; }
+  .step.active .step-icon, .step.running .step-icon { background: #1e1e50; color: #6c63ff; animation: pulse 1.2s infinite; }
   .step.done .step-icon  { background: #1a2e1a; color: #4caf50; animation: none; }
   .step.error .step-icon { background: #2e1a1a; color: #ef5350; animation: none; }
 
@@ -531,7 +531,9 @@ function handleEvent({ step, status, message }) {
   const msgEl = document.getElementById('msg-' + step);
   if (!stepEl) return;
 
-  stepEl.className = 'step ' + status;
+  // "running" → "active" (CSS 클래스 매핑)
+  const cssClass = status === 'running' ? 'active' : status;
+  stepEl.className = 'step ' + cssClass;
   msgEl.textContent = message;
 
   if (step === 'capcut' && status === 'done') {
