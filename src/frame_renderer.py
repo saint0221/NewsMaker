@@ -66,6 +66,13 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
+_LANG_FONT_MAP: dict[str, str] = {
+    "ja": "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "zh": "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "es": "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+}
+
+
 # ── 텍스처 배경 ────────────────────────────────────────────────
 def _parchment_bg() -> Image.Image:
     img = Image.new("RGB", (W, H), PARCHMENT)
@@ -187,6 +194,7 @@ def render_frame(
     active_char_end: int = -1,
     image_cache: dict | None = None,
     transparent_hero: bool = False,   # True → 히어로 영역을 투명으로 (Ken Burns용)
+    subtitle_lang: str = "ko",
 ) -> Image.Image:
 
     mode = "RGBA" if transparent_hero else "RGB"
@@ -257,7 +265,10 @@ def render_frame(
     draw.text(((W - bw) // 2, badge_y0 + 12), bl, font=f_badge, fill=BADGE_FG)
 
     # ── 자막 텍스트 구역 — 단일 라인씩, 5 엔트리 ─────────────────
-    f_ko        = _font(42)
+    _lf_path = _LANG_FONT_MAP.get(subtitle_lang)
+    f_ko = (ImageFont.truetype(_lf_path, 42)
+            if _lf_path and os.path.exists(_lf_path)
+            else _font(42))
     f_body      = _font(54)
     f_body_bold = _font(54, bold=True)
     KO_H        = 56   # 한글 줄 높이
@@ -403,6 +414,7 @@ def create_styled_video(
     ko_chunks: list[str] | None = None,
     image_path: str | None = None,
     scene_index: int = 0,   # 0~5: Ken Burns 프리셋 선택
+    subtitle_lang: str = "ko",
 ):
     """
     words 타이밍에 맞춰 스타일드 프레임을 생성하고 비디오로 조립한다.
@@ -415,7 +427,7 @@ def create_styled_video(
 
     if not words:
         # 정적 프레임 한 장
-        img = render_frame(headline, source, image_url, [], [], 0, "")
+        img = render_frame(headline, source, image_url, [], [], 0, "", subtitle_lang=subtitle_lang)
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
             img.save(f.name, quality=88, optimize=True)
             frame_path = f.name
@@ -542,6 +554,7 @@ def create_styled_video(
                 render_kwargs = dict(
                     transparent_hero=bool(hero_raw),
                     image_cache=image_cache,
+                    subtitle_lang=subtitle_lang,
                 )
                 if ev:
                     layer = render_frame(

@@ -343,10 +343,10 @@
     </div>
   </div>
   <div class="step" id="step-translate">
-    <div class="step-icon">한</div>
+    <div class="step-icon">🌐</div>
     <div class="step-body">
-      <div class="step-label">한국어 번역</div>
-      <div class="step-msg" id="msg-translate">씬별 6단어 청크 번역</div>
+      <div class="step-label">다국어 번역</div>
+      <div class="step-msg" id="msg-translate">한·일·중·스 4개 언어 동시 번역</div>
     </div>
   </div>
   <div class="step" id="step-capcut">
@@ -537,9 +537,15 @@ function handleEvent({ step, status, message }) {
   msgEl.textContent = message;
 
   if (step === 'capcut' && status === 'done') {
-    let path = message, sourceUrl = '';
-    try { const d = JSON.parse(message); path = d.path; sourceUrl = d.sourceUrl; } catch {}
-    document.getElementById('result-path').textContent = path;
+    let paths = {}, sourceUrl = '';
+    try {
+      const d = JSON.parse(message);
+      paths = d.paths || (d.path ? { ko: d.path } : {});
+      sourceUrl = d.sourceUrl || '';
+    } catch {}
+    const langLabels = { ko: '한국어', ja: '일본어', zh: '중국어', es: '스페인어' };
+    const lines = Object.entries(paths).map(([lang, p]) => `[${langLabels[lang] || lang}] ${p}`);
+    document.getElementById('result-path').textContent = lines.join('\n') || message;
     const link = document.getElementById('result-source-link');
     if (sourceUrl) { link.href = sourceUrl; link.style.display = 'inline-block'; }
     document.getElementById('result-section').classList.remove('hidden');

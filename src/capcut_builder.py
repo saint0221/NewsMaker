@@ -359,6 +359,7 @@ def build(
     draft_id: str | None = None,
     timeline_id: str | None = None,
     skip_text_track: bool = False,
+    videos_subdir: str | None = None,
 ) -> str:
     """
     article_dir 안의 파일로 CapCut 프로젝트를 생성하고 경로를 반환한다.
@@ -367,7 +368,7 @@ def build(
     """
     draft_id    = draft_id    or _uuid()
     timeline_id = timeline_id or _uuid()
-    draft_name  = f"NewsPipeline_{slug}"[:40]
+    draft_name  = f"NewsPipeline_{slug}"[:80]
     capcut_dir  = CAPCUT_ROOT / draft_name
     capcut_dir.mkdir(parents=True, exist_ok=True)
 
@@ -408,7 +409,8 @@ def build(
         if src_words.exists():
             shutil.copy2(src_words, dst_words)
 
-        vid_src = article_dir / "videos" / f"scene_{sid}-A.mp4"
+        _vdir = article_dir / "videos" / videos_subdir if videos_subdir else article_dir / "videos"
+        vid_src = _vdir / f"scene_{sid}-A.mp4"
         dst_vid = vid_res / f"scene_{sid}-A.mp4"
         if vid_src.exists():
             shutil.copy2(vid_src, dst_vid)

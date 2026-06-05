@@ -64,11 +64,11 @@ def _create_thumbnail_video(output_path: str, duration: float, image_url: str):
 from src.chunker import chunk_words as _make_chunks   # 단일 정규 함수
 
 
-def _translate_chunks(words: list[dict]) -> list[str]:
-    """청크별 한국어 번역 (한 번에 배치 처리)."""
-    from src.translator import translate_to_korean
+def _translate_chunks(words: list[dict], lang_code: str = "ko") -> list[str]:
+    """청크별 번역 (한 번에 배치 처리)."""
+    from src.translator import translate_chunks
     chunks = _make_chunks(words)
-    return translate_to_korean(chunks) if chunks else []
+    return translate_chunks(chunks, lang_code) if chunks else []
 
 
 def _make_common_title(script_md: str, fallback: str) -> str:
@@ -164,9 +164,11 @@ def export(
     scene_ids: list[str],
     article_url: str = "",
     image_url: str = "",
+    lang_code: str = "ko",
+    topic: str = "",
 ) -> str:
     """
-    1. videos/ 에 배경 비디오 생성 (썸네일 or 검은 배경)
+    1. videos/{lang_code}/ 에 배경 비디오 생성 (썸네일 or 검은 배경)
     2. capcut_builder로 CapCut 프로젝트 직접 생성
     모든 파일은 article_dir 안에 유지됨.
 
@@ -180,7 +182,9 @@ def export(
         script_md, re.MULTILINE
     )
     title = title_match.group(1).strip() if title_match else "뉴스-숏폼"
-    slug = re.sub(r'[^\w가-힣-]', '-', title).strip('-')[:40]
+    slug_base = topic if topic else title
+    _base_slug = re.sub(r'[^\w가-힣-]', '-', slug_base).strip('-')[:60]
+    slug = f"{_base_slug}-{lang_code}"
 
     # 공통 타이틀 생성 (모든 씬 동일하게 사용)
     common_title = _make_common_title(script_md, title)
@@ -212,8 +216,8 @@ def export(
     # 스타일드 비디오 생성 (양피지 레이아웃)
     from src.frame_renderer import create_styled_video
 
-    videos_dir = article_dir / "videos"
-    videos_dir.mkdir(exist_ok=True)
+    videos_dir = article_dir / "videos" / lang_code
+    videos_dir.mkdir(parents=True, exist_ok=True)
 
     for sid in scene_ids:
         audio_path = article_dir / "audio" / f"scene_{sid}.mp3"
@@ -223,19 +227,19 @@ def export(
         words_path = article_dir / "subtitles" / f"scene_{sid}_words.json"
         words = json.loads(words_path.read_text()) if words_path.exists() else []
 
-        chunk_ko_path = article_dir / "subtitles" / f"scene_{sid}_chunk_ko.json"
+        chunk_trans_path = article_dir / "subtitles" / f"scene_{sid}_chunk_{lang_code}.json"
         if words:
             expected = len(_make_chunks(words))
-            cached = json.loads(chunk_ko_path.read_text()) if chunk_ko_path.exists() else []
+            cached = json.loads(chunk_trans_path.read_text()) if chunk_trans_path.exists() else []
             if not cached or len(cached) != expected:
-                result = _translate_chunks(words)
+                result = _translate_chunks(words, lang_code)
                 if result and len(result) == expected:
-                    chunk_ko_path.write_text(json.dumps(result, ensure_ascii=False, indent=2))
+                    chunk_trans_path.write_text(json.dumps(result, ensure_ascii=False, indent=2))
                     cached = result
             # 불변식: ko_chunks 수 == 청크 수 (어긋나면 즉시 에러)
             if cached and len(cached) != expected:
                 raise RuntimeError(
-                    f"씬 {sid} ko_chunks 수 불일치: {len(cached)} != {expected}. "
+                    f"씬 {sid} {lang_code}_chunks 수 불일치: {len(cached)} != {expected}. "
                     "번역을 재실행하거나 캐시를 삭제하세요."
                 )
         else:
@@ -255,6 +259,7 @@ def export(
             total_duration=dur,
             image_path=shared_image,
             scene_index=int(sid) - 1,   # 씬별 다른 Ken Burns 프리셋
+            subtitle_lang=lang_code,
         )
 
     # article.json에 URL 저장
@@ -266,5 +271,5 @@ def export(
 
     # CapCut 프로젝트 직접 생성
     # 텍스트가 비디오 프레임에 이미 렌더링되어 있으므로 CapCut 텍스트 트랙 생략
-    capcut_path = _build_capcut(article_dir, slug, skip_text_track=True)
+    capcut_path = _build_capcut(article_dir, slug, skip_text_track=True, videos_subdir=lang_code)
     return capcut_path

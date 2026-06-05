@@ -10,7 +10,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
+load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -405,40 +405,50 @@ async def run_topic_pipeline(req: TopicRequest):
             yield event("tts", "error", str(e))
             return
 
-        # 한국어 번역
-        yield event("translate", "running", f"한국어 번역 중 ({len(narrations)}개 씬)...")
+        # 다국어 번역
+        _LANGS = ["ko", "ja", "zh", "es"]
+        yield event("translate", "running", f"다국어 번역 중 ({len(narrations)}개 씬 × {len(_LANGS)}개 언어)...")
         try:
-            from src.translator import translate_to_korean
+            from src.translator import translate_chunks
             from src.chunker import chunk_words as _cw
-            for sid in narrations.keys():
-                wp = article_dir / "subtitles" / f"scene_{sid}_words.json"
-                kp = article_dir / "subtitles" / f"scene_{sid}_chunk_ko.json"
-                if not wp.exists(): continue
-                wd = json.loads(wp.read_text())
-                ch = _cw(wd)
-                ca = json.loads(kp.read_text()) if kp.exists() else []
-                if ca and len(ca) == len(ch):
-                    continue
-                for _ in range(3):
-                    ko = await asyncio.to_thread(translate_to_korean, ch)
-                    if ko and len(ko) == len(ch):
-                        kp.write_text(json.dumps(ko, ensure_ascii=False))
-                        break
-            yield event("translate", "done", "번역 완료")
+
+            async def _translate_lang(lang: str):
+                for sid in narrations.keys():
+                    wp = article_dir / "subtitles" / f"scene_{sid}_words.json"
+                    tp = article_dir / "subtitles" / f"scene_{sid}_chunk_{lang}.json"
+                    if not wp.exists():
+                        continue
+                    wd = json.loads(wp.read_text())
+                    ch = _cw(wd)
+                    ca = json.loads(tp.read_text()) if tp.exists() else []
+                    if ca and len(ca) == len(ch):
+                        continue
+                    for _ in range(3):
+                        translated = await asyncio.to_thread(translate_chunks, ch, lang)
+                        if translated and len(translated) == len(ch):
+                            tp.write_text(json.dumps(translated, ensure_ascii=False))
+                            break
+
+            await asyncio.gather(*[_translate_lang(lang) for lang in _LANGS])
+            yield event("translate", "done", "다국어 번역 완료")
         except Exception as e:
             yield event("translate", "error", str(e))
 
-        # CapCut
-        yield event("capcut", "running", "CapCut 프로젝트 생성 중...")
-        try:
-            from src.videomaker_export import export
-            capcut_path = await asyncio.to_thread(
-                export, article_dir, script_md, list(narrations.keys()),
-                article.url or "", article.image_url or "")
-            yield event("capcut", "done", json.dumps(
-                {"path": capcut_path, "sourceUrl": article.url or ""}, ensure_ascii=False))
-        except Exception as e:
-            yield event("capcut", "error", str(e))
+        # CapCut (언어별 순차 생성)
+        yield event("capcut", "running", "언어별 CapCut 프로젝트 생성 중...")
+        capcut_paths = {}
+        for lang in _LANGS:
+            try:
+                from src.videomaker_export import export
+                path = await asyncio.to_thread(
+                    export, article_dir, script_md, list(narrations.keys()),
+                    article.url or "", article.image_url or "", lang, req.topic)
+                capcut_paths[lang] = path
+                yield event("capcut", "running", f"{lang} 완료")
+            except Exception as e:
+                yield event("capcut", "running", f"{lang} 실패: {e}")
+        yield event("capcut", "done", json.dumps(
+            {"paths": capcut_paths, "sourceUrl": article.url or ""}, ensure_ascii=False))
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -589,58 +599,55 @@ async def run_pipeline(ref: ArticleRef, request: Request):
             yield event("tts", "error", str(e))
             return
 
-        # 3-b. 한국어 번역 (TTS 직후 명시적 실행, 실패 시 즉시 재시도)
-        yield event("translate", "running", f"한국어 번역 중 ({len(narrations)}개 씬)...")
+        # 3-b. 다국어 번역 (TTS 직후 병렬 실행)
+        _LANGS = ["ko", "ja", "zh", "es"]
+        yield event("translate", "running", f"다국어 번역 중 ({len(narrations)}개 씬 × {len(_LANGS)}개 언어)...")
         try:
-            from src.translator import translate_to_korean
-            from src.chunker import chunk_words as _chunk_words   # 단일 정규 함수
+            from src.translator import translate_chunks
+            from src.chunker import chunk_words as _chunk_words
 
-            for sid in narrations.keys():
-                words_path = article_dir / "subtitles" / f"scene_{sid}_words.json"
-                ko_path    = article_dir / "subtitles" / f"scene_{sid}_chunk_ko.json"
-                if not words_path.exists():
-                    continue
-                words_data = json.loads(words_path.read_text())
-                chunks_6w  = _chunk_words(words_data)
-                cached     = json.loads(ko_path.read_text()) if ko_path.exists() else []
-
-                if cached and len(cached) == len(chunks_6w):
-                    yield event("translate", "running", f"씬 {sid} 캐시 사용")
-                    continue
-
-                # 번역 실행 (최대 3회)
-                translated = []
-                for attempt in range(3):
-                    translated = await asyncio.to_thread(translate_to_korean, chunks_6w)
-                    if translated and len(translated) == len(chunks_6w):
-                        break
+            async def _translate_lang(lang: str):
+                for sid in narrations.keys():
+                    words_path = article_dir / "subtitles" / f"scene_{sid}_words.json"
+                    trans_path = article_dir / "subtitles" / f"scene_{sid}_chunk_{lang}.json"
+                    if not words_path.exists():
+                        continue
+                    words_data = json.loads(words_path.read_text())
+                    chunks_6w  = _chunk_words(words_data)
+                    cached     = json.loads(trans_path.read_text()) if trans_path.exists() else []
+                    if cached and len(cached) == len(chunks_6w):
+                        continue
                     translated = []
+                    for attempt in range(3):
+                        translated = await asyncio.to_thread(translate_chunks, chunks_6w, lang)
+                        if translated and len(translated) == len(chunks_6w):
+                            break
+                        translated = []
+                    if translated:
+                        trans_path.write_text(json.dumps(translated, ensure_ascii=False))
 
-                if translated:
-                    ko_path.write_text(json.dumps(translated, ensure_ascii=False))
-                    yield event("translate", "running", f"씬 {sid} 완료 ({len(translated)}개)")
-                else:
-                    yield event("translate", "error", f"씬 {sid} 번역 실패 — 번역 없이 진행")
-
-            yield event("translate", "done", "번역 완료")
+            await asyncio.gather(*[_translate_lang(lang) for lang in _LANGS])
+            yield event("translate", "done", "다국어 번역 완료")
         except Exception as e:
             yield event("translate", "error", f"번역 오류: {e}")
 
-        # 4. CapCut 프로젝트 생성
-        yield event("capcut", "running", "CapCut 프로젝트 생성 중...")
-        try:
-            from src.videomaker_export import export
-
-            capcut_path = await asyncio.to_thread(
-                export, article_dir, script_md, list(narrations.keys()),
-                article.url or "", article.image_url or ""
-            )
-            yield event("capcut", "done", json.dumps({
-                "path": capcut_path,
-                "sourceUrl": article.url or "",
-            }, ensure_ascii=False))
-        except Exception as e:
-            yield event("capcut", "error", str(e))
-            return
+        # 4. CapCut 프로젝트 생성 (언어별 순차)
+        yield event("capcut", "running", "언어별 CapCut 프로젝트 생성 중...")
+        capcut_paths = {}
+        for lang in _LANGS:
+            try:
+                from src.videomaker_export import export
+                path = await asyncio.to_thread(
+                    export, article_dir, script_md, list(narrations.keys()),
+                    article.url or "", article.image_url or "", lang, article.title or ""
+                )
+                capcut_paths[lang] = path
+                yield event("capcut", "running", f"{lang} 완료")
+            except Exception as e:
+                yield event("capcut", "running", f"{lang} 실패: {e}")
+        yield event("capcut", "done", json.dumps({
+            "paths": capcut_paths,
+            "sourceUrl": article.url or "",
+        }, ensure_ascii=False))
 
     return StreamingResponse(stream(), media_type="text/event-stream")
